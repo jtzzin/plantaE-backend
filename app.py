@@ -8,6 +8,8 @@ import os
 
 # Carrega variáveis de ambiente
 load_dotenv()
+print('MONGO_URI:', os.environ.get('MONGO_URI'))
+
 
 app = Flask(__name__)
 CORS(app)  # ← HABILITA CORS (permite frontend acessar)
