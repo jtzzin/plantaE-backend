@@ -1,4 +1,3 @@
-# backend/activities.py
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime, timezone, timedelta
@@ -9,9 +8,9 @@ activities_bp = Blueprint('activities', __name__)
 def log_activity(owner: str, action: str, plant_id: str = None, plant_name: str = None, extra: dict = None):
     doc = {
         'owner': owner,
-        'action': action,            # 'create' | 'delete' | 'water' | 'update'
-        'plant_id': plant_id,        # string (ObjectId em string)
-        'plant_name': plant_name,    # nome da planta no momento do evento
+        'action': action,
+        'plant_id': plant_id,
+        'plant_name': plant_name,
         'at': datetime.now(timezone.utc),
     }
     if extra:
@@ -23,12 +22,10 @@ def log_activity(owner: str, action: str, plant_id: str = None, plant_name: str 
 def list_activities():
     user_id = get_jwt_identity()
     q = {'owner': user_id}
-
     plant_id = request.args.get('plant_id', '').strip()
     if plant_id:
         q['plant_id'] = plant_id
-
-    day = request.args.get('day', '').strip()  # YYYY-MM-DD
+    day = request.args.get('day', '').strip()
     if day:
         try:
             start = datetime.fromisoformat(day).replace(tzinfo=timezone.utc)
@@ -36,7 +33,6 @@ def list_activities():
             q['at'] = {'$gte': start, '$lt': end}
         except Exception:
             pass
-
     cursor = mongo.db.activities.find(q).sort('at', -1)
     docs = []
     for d in cursor:

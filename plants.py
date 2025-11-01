@@ -1,4 +1,3 @@
-# backend/plants.py
 from flask import Blueprint, request, jsonify, current_app, send_from_directory
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from werkzeug.utils import secure_filename
@@ -8,22 +7,16 @@ from bson import ObjectId
 from extensions import mongo
 from activities import log_activity
 
-# Extensões permitidas para envio de imagem
 ALLOWED_EXT = {'png', 'jpg', 'jpeg', 'gif'}
-
-# Blueprint para organizar as rotas de plantas
 plants_bp = Blueprint('plants', __name__)
 
-# Função para checar se o arquivo enviado é imagem válida
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXT
 
-# Rota só para testar a API
 @plants_bp.route('/test', methods=['GET'])
 def test():
     return jsonify({'ok': True})
 
-# Lista todas as plantas do usuário logado
 @plants_bp.route('', methods=['GET'])
 @plants_bp.route('/', methods=['GET'])
 @jwt_required()
@@ -35,7 +28,6 @@ def list_plants():
         d['_id'] = str(d['_id'])
     return jsonify(docs)
 
-# Cria uma nova planta (Primeira rega: passado ou "agora"; futuro é rebaixado para "agora")
 @plants_bp.route('', methods=['POST'])
 @plants_bp.route('/', methods=['POST'])
 @jwt_required()
@@ -54,7 +46,6 @@ def create_plant():
 
     notes = data.get('notes', '')
 
-    # helper para normalizar ISO -> UTC
     def parse_iso_to_utc(iso_str):
         try:
             norm = iso_str.replace('Z', '+00:00')
@@ -66,17 +57,14 @@ def create_plant():
             return None
 
     now = datetime.now(timezone.utc)
-
     first_iso = data.get('firstwateringat') or data.get('first_watering_at')
     first_dt = None
     if first_iso:
         maybe = parse_iso_to_utc(first_iso)
-        # só aceita passado; se futuro ou inválido, força agora
         if maybe and maybe <= now:
             first_dt = maybe
-
     if first_dt is None:
-        first_dt = now  # vazio, inválido ou futuro -> agora
+        first_dt = now
 
     coll = mongo.db.plants
     plant = {
@@ -92,13 +80,16 @@ def create_plant():
 
     res = coll.insert_one(plant)
     pid = str(res.inserted_id)
-
-    # log de criação
-    log_activity(user_id, 'create', plant_id=pid, plant_name=name)
-
+    # LOGAMENTO AJUSTADO: salva horário real da primeira rega no extra
+    log_activity(
+        user_id,
+        'create',
+        plant_id=pid,
+        plant_name=name,
+        extra={'first_watered': first_dt.isoformat()}
+    )
     return jsonify({'_id': pid}), 201
 
-# Busca planta pelo ID
 @plants_bp.route('/<plant_id>', methods=['GET'])
 @jwt_required()
 def get_plant(plant_id):
@@ -109,7 +100,6 @@ def get_plant(plant_id):
     p['_id'] = str(p['_id'])
     return jsonify(p)
 
-# Atualiza planta (info + foto opcional em uma única requisição)
 @plants_bp.route('/<plant_id>', methods=['PUT', 'PATCH'])
 @jwt_required()
 def update_plant(plant_id):
@@ -143,7 +133,6 @@ def update_plant(plant_id):
             changes.append({'field': 'notes', 'from': current.get('notes'), 'to': new_notes})
             updates['notes'] = new_notes
 
-    # Foto opcional via multipart
     if 'photo' in request.files:
         file = request.files['photo']
         if file and file.filename and allowed_file(file.filename):
@@ -159,7 +148,6 @@ def update_plant(plant_id):
 
     coll.update_one({'_id': ObjectId(plant_id)}, {'$set': updates})
 
-    # Log de atualização com diffs
     try:
         name_for_log = updates.get('name') or current.get('name')
         log_activity(
@@ -174,7 +162,6 @@ def update_plant(plant_id):
 
     return jsonify({'ok': True, 'updated': list(updates.keys()), 'changes': changes, 'photo_changed': photo_changed}), 200
 
-# Remove planta pelo ID
 @plants_bp.route('/<plant_id>', methods=['DELETE'])
 @jwt_required()
 def delete_plant(plant_id):
@@ -183,11 +170,9 @@ def delete_plant(plant_id):
     existing = coll.find_one({'_id': ObjectId(plant_id)})
     name = existing.get('name') if existing else None
     res = coll.delete_one({'_id': ObjectId(plant_id)})
-    # log de exclusão
     log_activity(user_id, 'delete', plant_id=plant_id, plant_name=name)
     return jsonify({'deleted': res.deleted_count}), 200
 
-# Adiciona data da rega ao histórico e atualiza o último horário
 @plants_bp.route('/<plant_id>/water', methods=['POST'])
 @jwt_required()
 def water_plant(plant_id):
@@ -199,13 +184,11 @@ def water_plant(plant_id):
         '$set': {'last_watered': time}
     }
     coll.update_one({'_id': ObjectId(plant_id)}, update)
-    # log de rega
     p = coll.find_one({'_id': ObjectId(plant_id)}, {'name': 1})
     name = p.get('name') if p else None
     log_activity(user_id, 'water', plant_id=plant_id, plant_name=name)
     return jsonify({'ok': True}), 200
 
-# Upload de imagem da planta
 @plants_bp.route('/<plant_id>/upload', methods=['POST'])
 @jwt_required()
 def upload_photo(plant_id):
@@ -227,14 +210,10 @@ def upload_photo(plant_id):
         return jsonify({'filename': filename}), 200
     return jsonify({'msg': 'arquivo_invalido'}), 400
 
-# Servir imagem da planta pelo nome do arquivo
 @plants_bp.route('/photo/<filename>', methods=['GET'])
 def serve_photo(filename):
     return send_from_directory(current_app.config['UPLOAD_FOLDER'], filename)
 
-# ============ ROTAS DE BUSCA E FILTRO ============
-
-# Busca plantas por nome (usando query param)
 @plants_bp.route('/search', methods=['GET'])
 @jwt_required()
 def search_plants():
@@ -249,7 +228,6 @@ def search_plants():
         d['_id'] = str(d['_id'])
     return jsonify(docs)
 
-# Filtro e ordenação (ordenar por nome, data de criação, última rega, etc)
 @plants_bp.route('/filter', methods=['GET'])
 @jwt_required()
 def filter_plants():
