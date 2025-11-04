@@ -23,7 +23,7 @@ def test():
 def list_plants():
     user_id = get_jwt_identity()
     coll = mongo.db.plants
-    docs = list(coll.find({'owner': user_id}))
+    docs = list(coll.find({'owner': user_id, 'deleted': {'$ne': True}}))
     for d in docs:
         d['_id'] = str(d['_id'])
     return jsonify(docs)
@@ -33,8 +33,11 @@ def list_plants():
 @jwt_required()
 def create_plant():
     user_id = get_jwt_identity()
-    data = request.form.to_dict() or request.get_json() or {}
-
+    # Permite tanto JSON quanto multipart/form-data
+    if request.content_type and request.content_type.startswith('multipart/form-data'):
+        data = request.form.to_dict()
+    else:
+        data = request.get_json() or {}
     name = data.get('name')
     if not name:
         return jsonify({'msg': 'nome_obrigatorio'}), 400
@@ -66,6 +69,17 @@ def create_plant():
     if first_dt is None:
         first_dt = now
 
+    # Processa foto, se enviada
+    photo_filename = None
+    if 'photo' in request.files:
+        file = request.files['photo']
+        if file and file.filename and allowed_file(file.filename):
+            fname = secure_filename(file.filename)
+            fname = f"{datetime.now(timezone.utc).timestamp()}_{fname}"
+            save_to = os.path.join(current_app.config['UPLOAD_FOLDER'], fname)
+            file.save(save_to)
+            photo_filename = fname
+
     coll = mongo.db.plants
     plant = {
         'owner': user_id,
@@ -75,12 +89,12 @@ def create_plant():
         'created_at': now,
         'last_watered': first_dt,
         'water_history': [{'at': first_dt, 'by': user_id}],
-        'photo': None
+        'photo': photo_filename,
+        'deleted': False
     }
 
     res = coll.insert_one(plant)
     pid = str(res.inserted_id)
-    # LOGAMENTO AJUSTADO: salva horário real da primeira rega no extra
     log_activity(
         user_id,
         'create',
@@ -106,7 +120,6 @@ def update_plant(plant_id):
     user_id = get_jwt_identity()
     data = request.form.to_dict() or request.get_json() or {}
     coll = mongo.db.plants
-
     current = coll.find_one({'_id': ObjectId(plant_id)}) or {}
     changes = []
     updates = {}
@@ -169,9 +182,21 @@ def delete_plant(plant_id):
     coll = mongo.db.plants
     existing = coll.find_one({'_id': ObjectId(plant_id)})
     name = existing.get('name') if existing else None
-    res = coll.delete_one({'_id': ObjectId(plant_id)})
-    log_activity(user_id, 'delete', plant_id=plant_id, plant_name=name)
-    return jsonify({'deleted': res.deleted_count}), 200
+    res = coll.update_one({'_id': ObjectId(plant_id)}, {'$set': {'deleted': True}})
+    log_activity(user_id, 'delete', plant_id=plant_id, plant_name=name, extra={'plant_data': existing})
+    return jsonify({'deleted': res.modified_count}), 200
+
+@plants_bp.route('/<plant_id>/restore', methods=['POST'])
+@jwt_required()
+def restore_plant(plant_id):
+    user_id = get_jwt_identity()
+    coll = mongo.db.plants
+    plant = coll.find_one({'_id': ObjectId(plant_id)})
+    if not plant or not plant.get('deleted'):
+        return jsonify({'msg': 'não_encontrada_ou_nao_excluida'}), 404
+    coll.update_one({'_id': ObjectId(plant_id)}, {'$set': {'deleted': False}})
+    log_activity(user_id, 'restore', plant_id=plant_id, plant_name=plant['name'], extra={'plant_data': plant})
+    return jsonify({'restored': True}), 200
 
 @plants_bp.route('/<plant_id>/water', methods=['POST'])
 @jwt_required()
@@ -183,7 +208,9 @@ def water_plant(plant_id):
         '$push': {'water_history': {'at': time, 'by': user_id}},
         '$set': {'last_watered': time}
     }
-    coll.update_one({'_id': ObjectId(plant_id)}, update)
+    res = coll.update_one({'_id': ObjectId(plant_id)}, update)
+    if res.matched_count == 0:
+        return jsonify({'msg': 'planta_nao_encontrada'}), 404
     p = coll.find_one({'_id': ObjectId(plant_id)}, {'name': 1})
     name = p.get('name') if p else None
     log_activity(user_id, 'water', plant_id=plant_id, plant_name=name)
@@ -203,40 +230,15 @@ def upload_photo(plant_id):
         save_to = os.path.join(current_app.config['UPLOAD_FOLDER'], filename)
         file.save(save_to)
         coll = mongo.db.plants
-        coll.update_one(
+        res = coll.update_one(
             {'_id': ObjectId(plant_id)},
             {'$set': {'photo': filename}}
         )
+        if res.matched_count == 0:
+            return jsonify({'msg': 'planta_nao_encontrada'}), 404
         return jsonify({'filename': filename}), 200
     return jsonify({'msg': 'arquivo_invalido'}), 400
 
 @plants_bp.route('/photo/<filename>', methods=['GET'])
 def serve_photo(filename):
     return send_from_directory(current_app.config['UPLOAD_FOLDER'], filename)
-
-@plants_bp.route('/search', methods=['GET'])
-@jwt_required()
-def search_plants():
-    user_id = get_jwt_identity()
-    nome = request.args.get('nome', "").strip()
-    query = {'owner': user_id}
-    if nome:
-        query['name'] = {'$regex': nome, '$options': 'i'}
-    coll = mongo.db.plants
-    docs = list(coll.find(query))
-    for d in docs:
-        d['_id'] = str(d['_id'])
-    return jsonify(docs)
-
-@plants_bp.route('/filter', methods=['GET'])
-@jwt_required()
-def filter_plants():
-    user_id = get_jwt_identity()
-    order = request.args.get('order', "name")
-    direction = -1 if request.args.get('dir', 'asc') == 'desc' else 1
-    coll = mongo.db.plants
-    filtro = {'owner': user_id}
-    docs = list(coll.find(filtro).sort(order, direction))
-    for d in docs:
-        d['_id'] = str(d['_id'])
-    return jsonify(docs)
