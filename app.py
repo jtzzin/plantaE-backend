@@ -47,9 +47,9 @@ if __name__ == '__main__':
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     try:
         mongo.db.command('ping')
-        print('✅ Conectado ao MongoDB')
+        print('Conectado ao MongoDB')
     except Exception as e:
-        print(f'❌ Erro ao conectar ao MongoDB: {e}')
+        print(f'Erro ao conectar ao MongoDB: {e}')
         exit(1)
     port = int(os.environ.get('PORT', 5000))
     app.run(debug=True, port=port, host='0.0.0.0')
