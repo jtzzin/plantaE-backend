@@ -1,3 +1,4 @@
+# Importações necessárias
 from flask import Blueprint, request, jsonify, current_app, send_from_directory
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from werkzeug.utils import secure_filename
@@ -7,41 +8,55 @@ from bson import ObjectId
 from extensions import mongo
 from activities import log_activity
 
+# Extensões de arquivo permitidas para upload de fotos
 ALLOWED_EXT = {'png', 'jpg', 'jpeg', 'gif'}
+
+# Criação do Blueprint que agrupa as rotas relacionadas a plantas
 plants_bp = Blueprint('plants', __name__)
 
+# Função auxiliar para verificar se o arquivo enviado tem uma extensão permitida
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXT
 
+
+# Rota simples de teste, útil para verificar se o blueprint está funcionando
 @plants_bp.route('/test', methods=['GET'])
 def test():
     return jsonify({'ok': True})
 
+
+# Rota que lista todas as plantas de um usuário autenticado
 @plants_bp.route('', methods=['GET'])
 @plants_bp.route('/', methods=['GET'])
 @jwt_required()
 def list_plants():
-    user_id = get_jwt_identity()
+    user_id = get_jwt_identity()  # Obtém o ID do usuário a partir do token JWT
     coll = mongo.db.plants
+    # Busca todas as plantas do usuário que não foram marcadas como deletadas
     docs = list(coll.find({'owner': user_id, 'deleted': {'$ne': True}}))
+    # Converte ObjectId em string para poder enviar como JSON
     for d in docs:
         d['_id'] = str(d['_id'])
     return jsonify(docs)
 
+
+# Rota que cria uma nova planta
 @plants_bp.route('', methods=['POST'])
 @plants_bp.route('/', methods=['POST'])
 @jwt_required()
 def create_plant():
     user_id = get_jwt_identity()
-    # Permite tanto JSON quanto multipart/form-data
+    # Aceita tanto dados em JSON quanto multipart/form-data (para incluir imagem)
     if request.content_type and request.content_type.startswith('multipart/form-data'):
         data = request.form.to_dict()
     else:
         data = request.get_json() or {}
+
     name = data.get('name')
     if not name:
         return jsonify({'msg': 'nome_obrigatorio'}), 400
 
+    # Intervalo de rega em dias (valor padrão: 7)
     try:
         water_interval_days = int(data.get('water_interval_days', 7))
     except Exception:
@@ -49,6 +64,7 @@ def create_plant():
 
     notes = data.get('notes', '')
 
+    # Função interna para converter data em formato ISO para UTC
     def parse_iso_to_utc(iso_str):
         try:
             norm = iso_str.replace('Z', '+00:00')
@@ -60,6 +76,7 @@ def create_plant():
             return None
 
     now = datetime.now(timezone.utc)
+    # Determina a data da primeira rega
     first_iso = data.get('firstwateringat') or data.get('first_watering_at')
     first_dt = None
     if first_iso:
@@ -69,7 +86,7 @@ def create_plant():
     if first_dt is None:
         first_dt = now
 
-    # Processa foto, se enviada
+    # Verifica se foi enviada uma foto
     photo_filename = None
     if 'photo' in request.files:
         file = request.files['photo']
@@ -80,6 +97,7 @@ def create_plant():
             file.save(save_to)
             photo_filename = fname
 
+    # Cria o documento da planta
     coll = mongo.db.plants
     plant = {
         'owner': user_id,
@@ -93,8 +111,11 @@ def create_plant():
         'deleted': False
     }
 
+    # Insere no banco de dados
     res = coll.insert_one(plant)
     pid = str(res.inserted_id)
+
+    # Registra a atividade de criação
     log_activity(
         user_id,
         'create',
@@ -104,6 +125,8 @@ def create_plant():
     )
     return jsonify({'_id': pid}), 201
 
+
+# Rota para obter os dados de uma planta específica
 @plants_bp.route('/<plant_id>', methods=['GET'])
 @jwt_required()
 def get_plant(plant_id):
@@ -114,6 +137,8 @@ def get_plant(plant_id):
     p['_id'] = str(p['_id'])
     return jsonify(p)
 
+
+# Rota para atualizar dados de uma planta
 @plants_bp.route('/<plant_id>', methods=['PUT', 'PATCH'])
 @jwt_required()
 def update_plant(plant_id):
@@ -125,12 +150,14 @@ def update_plant(plant_id):
     updates = {}
     photo_changed = False
 
+    # Atualiza o nome
     if 'name' in data and data['name'].strip():
         new_name = data['name'].strip()
         if new_name != current.get('name'):
             changes.append({'field': 'name', 'from': current.get('name'), 'to': new_name})
             updates['name'] = new_name
 
+    # Atualiza o intervalo de rega
     if 'water_interval_days' in data:
         try:
             new_interval = int(data.get('water_interval_days'))
@@ -140,12 +167,14 @@ def update_plant(plant_id):
         except Exception:
             pass
 
+    # Atualiza as anotações
     if 'notes' in data:
         new_notes = data.get('notes', '')
         if new_notes != current.get('notes'):
             changes.append({'field': 'notes', 'from': current.get('notes'), 'to': new_notes})
             updates['notes'] = new_notes
 
+    # Atualiza a foto, se enviada
     if 'photo' in request.files:
         file = request.files['photo']
         if file and file.filename and allowed_file(file.filename):
@@ -161,6 +190,7 @@ def update_plant(plant_id):
 
     coll.update_one({'_id': ObjectId(plant_id)}, {'$set': updates})
 
+    # Registra atividade de atualização
     try:
         name_for_log = updates.get('name') or current.get('name')
         log_activity(
@@ -175,6 +205,8 @@ def update_plant(plant_id):
 
     return jsonify({'ok': True, 'updated': list(updates.keys()), 'changes': changes, 'photo_changed': photo_changed}), 200
 
+
+# Rota para marcar uma planta como excluída (soft delete)
 @plants_bp.route('/<plant_id>', methods=['DELETE'])
 @jwt_required()
 def delete_plant(plant_id):
@@ -186,6 +218,8 @@ def delete_plant(plant_id):
     log_activity(user_id, 'delete', plant_id=plant_id, plant_name=name, extra={'plant_data': existing})
     return jsonify({'deleted': res.modified_count}), 200
 
+
+# Rota para restaurar uma planta excluída
 @plants_bp.route('/<plant_id>/restore', methods=['POST'])
 @jwt_required()
 def restore_plant(plant_id):
@@ -198,6 +232,8 @@ def restore_plant(plant_id):
     log_activity(user_id, 'restore', plant_id=plant_id, plant_name=plant['name'], extra={'plant_data': plant})
     return jsonify({'restored': True}), 200
 
+
+# Rota para registrar uma rega em uma planta
 @plants_bp.route('/<plant_id>/water', methods=['POST'])
 @jwt_required()
 def water_plant(plant_id):
@@ -216,6 +252,8 @@ def water_plant(plant_id):
     log_activity(user_id, 'water', plant_id=plant_id, plant_name=name)
     return jsonify({'ok': True}), 200
 
+
+# Rota específica apenas para upload de foto
 @plants_bp.route('/<plant_id>/upload', methods=['POST'])
 @jwt_required()
 def upload_photo(plant_id):
@@ -239,6 +277,8 @@ def upload_photo(plant_id):
         return jsonify({'filename': filename}), 200
     return jsonify({'msg': 'arquivo_invalido'}), 400
 
+
+# Rota pública para servir imagens salvas localmente
 @plants_bp.route('/photo/<filename>', methods=['GET'])
 def serve_photo(filename):
     return send_from_directory(current_app.config['UPLOAD_FOLDER'], filename)
