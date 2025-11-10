@@ -5,6 +5,7 @@ from extensions import mongo
 
 auth_bp = Blueprint('auth', __name__)
 
+
 def validate_auth_data(data):
     errors = {}
     username = data.get('username', '')
