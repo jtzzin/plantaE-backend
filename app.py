@@ -25,7 +25,7 @@ if app.debug:
 # Configura CORS 
 CORS(
     app,
-    resources={r"/*": {"origins": "*"}},
+    resources={r"/*": {"origins": "*"}}, # aqui, ta permitindo acesso de qualquer,origem, posso mudar se quiser apenas permitir a origem do netlify (SÓ MUDAR SE FOR PRA APP REAL).
     supports_credentials=False,
     allow_headers=["Content-Type", "Authorization"],
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
