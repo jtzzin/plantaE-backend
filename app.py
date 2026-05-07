@@ -55,6 +55,11 @@ def ping():
     print('Recebeu ping')
     return {'message': 'pong'}, 200
 
+# rota para pingar no render automaticamente e nao pausar o deploy
+@app.route("/health")
+def health():
+    return {"status": "online"}
+
 # Execução principal
 if __name__ == '__main__':
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
